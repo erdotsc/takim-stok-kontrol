@@ -425,7 +425,7 @@
   <div id="lowstock" class="panel active">
     <div class="card">
       <h2>⚠️ Sipariş Noktasının Altındaki Takımlar</h2>
-      <p class="hint">Güncel miktar &lt; sipariş noktası. <strong>Recon (R…)</strong> stokları Takım ID altında gösterilir. <strong>STOK-…-KULLANMA / 7 haneli SAP</strong> kaynakları SAP numarasının altında yeşil <strong>(Extra +qty)</strong> olarak belirtilir (stok toplanmaz).</p>
+        <strong><br> 
       <div class="controls">
         <input type="search" id="lowSearch" placeholder="Takım ID veya SAP ara…" style="min-width:200px">
         <select id="lowFilter">
@@ -451,7 +451,7 @@
   <div id="program" class="panel">
     <div class="card">
       <h2>📋 NC / Program Takım Kontrolü</h2>
-      <p class="hint">Kayıtlı program seçin, bir veya <strong>birden fazla</strong> .pch yükleyin veya takım listesini yapıştırın. ORDER: VLL/FVV → 120…</p>
+      <p class="hint"></p>
       <div class="controls">
         <select id="progSelect" style="min-width:220px" onchange="loadSelectedProg()">
           <option value="">— Kayıtlı program —</option>
@@ -473,6 +473,7 @@
   <div id="manage" class="panel">
     <div class="card">
       <h2>📁 Program Yönetimi</h2>
+        <strong><br> 
       <div class="controls">
         <input id="newProgName" placeholder="Program adı" style="min-width:180px">
         <button onclick="addProgram()">Kaydet</button>
@@ -484,11 +485,9 @@
 
   <div id="upload" class="panel">
     <div class="card">
-      <h2>📤 Excel / JSON Güncelle</h2>
+      <h2>📤 EXCEL / JSON Güncelle</h2>
       <p class="hint">
-        <strong>1) Excel Yükle</strong> — güncel stok (Ürün ID / SAP / Güncel miktar / Sipariş noktası + Recon + Kullanma).<br>
-        <strong>2) Alternatif Takım DB</strong> — V2: sütun1 = SAP, sütun2 = alternatif takımlar (stoka dokunmaz).<br>
-        JSON: diğer PC’ler için kaydet / yükle.
+        <strong><br>       
       </p>
       <div class="upload-zone">
         <input type="file" id="excelFile" accept=".xlsx,.xlsm" style="max-width:100%">
@@ -519,6 +518,7 @@
   <div id="search" class="panel">
     <div class="card">
       <h2>🔍 Takım Ara</h2>
+        <strong><br> 
       <div class="controls">
         <input type="search" id="searchInput" placeholder="Takım ID veya SAP…" style="min-width:240px">
         <button onclick="doSearch()">Ara</button>
