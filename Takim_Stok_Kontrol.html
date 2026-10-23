@@ -162,6 +162,25 @@
     display: block; margin-top: 0.15rem;
     font-size: 0.78rem; font-weight: 600; color: #86efac;
   }
+  .sap-phase-old {
+    color: #fbbf24; font-weight: 700;
+  }
+  .sap-phase-new, .sap-phase-note {
+    display: block; margin-top: 0.15rem;
+    font-size: 0.78rem; font-weight: 600; color: #93c5fd;
+  }
+  .sap-phase-note.old {
+    color: #fbbf24;
+  }
+  .phase-alt-sub {
+    display: block; margin-top: 0.15rem;
+    font-size: 0.78rem; font-weight: 600; color: #fbbf24;
+  }
+  .alt-chip.phase-new {
+    border-color: rgba(251, 191, 36, 0.5);
+    color: #fde68a;
+    background: rgba(251, 191, 36, 0.12);
+  }
   .qty-low, .qty-zero { color: var(--danger); font-weight: 700; }
   .qty-ok { color: var(--success); }
   .alt-list { display: flex; flex-wrap: wrap; gap: 0.3rem; }
@@ -513,6 +532,7 @@
         <div><strong>JSON güncelleme (yazılma):</strong> <span id="syncWriteAt">—</span></div>
         <div><strong>Kaynak:</strong> <span id="syncSourceText">—</span></div>
         <div><strong>Stok Excel:</strong> <span id="stokFileText">—</span></div>
+        <div><strong>DB Excel:</strong> <span id="dbFileText">—</span></div>
       </div>
     </div>
   </div>
@@ -539,6 +559,10 @@ let DATA = {
   stok: Object.assign({}, EMBEDDED.stok || {}),
   alts: JSON.parse(JSON.stringify(EMBEDDED.alts || {})),
   sapAlts: Object.assign({}, EMBEDDED.sapAlts || {}),
+  /** Eski SAP → { newSap, newAlts[] } phase-out */
+  sapPhase: Object.assign({}, EMBEDDED.sapPhase || {}),
+  /** Yeni SAP → eski SAP */
+  sapPhaseByNew: Object.assign({}, EMBEDDED.sapPhaseByNew || {}),
   altsDbVersion: (EMBEDDED.altsDbVersion || 2),
   programs: Object.assign({}, EMBEDDED.programs || {}),
   reconQty: {},
@@ -633,6 +657,8 @@ function buildPersistSnapshot() {
     stok: DATA.stok,
     alts: DATA.alts,
     sapAlts: DATA.sapAlts || {},
+    sapPhase: DATA.sapPhase || {},
+    sapPhaseByNew: DATA.sapPhaseByNew || {},
     altsDbVersion: DATA.altsDbVersion || 2,
     programs: DATA.programs || {},
     extraTools: DATA.extraTools || {},
@@ -1092,13 +1118,22 @@ function getAlts(id) {
   const n = normalizeId(id);
   const fromAlts = DATA.alts[n] || DATA.alts[id] || [];
   const sap = (DATA.stok[id] || DATA.stok[n] || {}).sap || lookupDbSap(id);
-  if (!sap || !DATA.sapAlts || !DATA.sapAlts[sap]) {
-    return fromAlts.slice();
+  const sapList = [];
+  if (sap) sapList.push(String(sap));
+  const ph = getPhaseInfo(sap);
+  if (ph) {
+    if (ph.oldSap && !sapList.includes(String(ph.oldSap))) sapList.push(String(ph.oldSap));
+    if (ph.newSap && !sapList.includes(String(ph.newSap))) sapList.push(String(ph.newSap));
   }
-  const family = (DATA.sapAlts[sap] || []).map(normalizeId).filter(Boolean);
+  const family = [];
+  sapList.forEach(s => {
+    (DATA.sapAlts && DATA.sapAlts[s] || []).forEach(t => family.push(t));
+  });
+  if (ph && ph.newAlts) ph.newAlts.forEach(t => family.push(t));
   const stokSiblings = Object.keys(DATA.stok || {}).filter(tid => {
     if (/^R/i.test(tid) || (typeof parseKullanmaId === 'function' && parseKullanmaId(tid))) return false;
-    return String((DATA.stok[tid] && DATA.stok[tid].sap) || '').trim() === String(sap);
+    const ts = String((DATA.stok[tid] && DATA.stok[tid].sap) || '').trim();
+    return sapList.includes(ts);
   }).map(normalizeId);
   const merged = [];
   const seen = new Set();
@@ -1153,18 +1188,54 @@ function extraStatusBadge(toolId) {
 }
 
 /** SAP numarası; altında yeşil (Extra +qty) */
+function getPhaseInfo(sap) {
+  const s = String(sap || '').trim();
+  if (!s) return null;
+  if (DATA.sapPhase && DATA.sapPhase[s]) {
+    const p = DATA.sapPhase[s];
+    return { mode: 'old', oldSap: s, newSap: p.newSap || '', newAlts: p.newAlts || [] };
+  }
+  if (DATA.sapPhaseByNew && DATA.sapPhaseByNew[s]) {
+    const oldS = DATA.sapPhaseByNew[s];
+    const p = (DATA.sapPhase && DATA.sapPhase[oldS]) || {};
+    return { mode: 'new', oldSap: oldS, newSap: s, newAlts: p.newAlts || [] };
+  }
+  return null;
+}
+
+function getPhaseNewAlts(toolId) {
+  const sap = getSap(toolId) || lookupDbSap(toolId);
+  const ph = getPhaseInfo(sap);
+  if (!ph || !ph.newAlts || !ph.newAlts.length) return [];
+  const self = normalizeId(toolId);
+  return ph.newAlts.map(normalizeId).filter(a => a && a !== self);
+}
+
 function renderSapCell(toolId, sap) {
   const main = sap || '—';
+  const ph = getPhaseInfo(main === '—' ? '' : main);
   const src = (DATA.extraSources && DATA.extraSources[toolId]) || [];
   const extraQty = src.reduce((s, x) => s + (x.qty || 0), 0) || getExtraQty(toolId);
-  if (!extraQty) {
-    return `<div class="sap-cell"><span class="sap-main">${main}</span></div>`;
+  let html = '<div class="sap-cell">';
+  if (ph && ph.mode === 'old' && ph.newSap) {
+    // Phase-out: eski SAP sarı, altında yeni SAP
+    html += `<span class="sap-main sap-phase-old" title="Phase-out (üretim sonu)">${main}</span>`;
+    html += `<span class="sap-phase-new" title="Yeni SAP">Yeni: ${ph.newSap}</span>`;
+  } else if (ph && ph.mode === 'new' && ph.oldSap) {
+    // Yeni SAP üstte, altında sarı eski SAP
+    html += `<span class="sap-main">${main}</span>`;
+    html += `<span class="sap-phase-note old" title="Eski (phase-out) SAP">Eski: ${ph.oldSap}</span>`;
+  } else {
+    html += `<span class="sap-main">${main}</span>`;
   }
-  const tip = src.length
-    ? src.map(s => `${s.source}: ${s.qty || 0}`).join(', ')
-    : `Extra +${extraQty}`;
-  return `<div class="sap-cell"><span class="sap-main">${main}</span>` +
-    `<span class="sap-kullanma" title="${tip}">(Extra +${extraQty})</span></div>`;
+  if (extraQty) {
+    const tip = src.length
+      ? src.map(s => `${s.source}: ${s.qty || 0}`).join(', ')
+      : `Extra +${extraQty}`;
+    html += `<span class="sap-kullanma" title="${tip}">(Extra +${extraQty})</span>`;
+  }
+  html += '</div>';
+  return html;
 }
 
 function renderStatusCell(toolId, qty, reorder) {
@@ -1200,6 +1271,9 @@ function renderToolIdCell(toolId) {
     getReconList(toolId).forEach(r => {
       html += `<span class="recon-sub" title="Recon (yeniden bilenen)">${r}</span>`;
     });
+    getPhaseNewAlts(toolId).forEach(a => {
+      html += `<span class="phase-alt-sub" title="Yeni alternatif (phase-out sonrası)">${a}</span>`;
+    });
   }
   html += '</div>';
   return html;
@@ -1225,13 +1299,18 @@ function renderStockCell(toolId, qty, reorder) {
 
 function renderAlts(toolId) {
   const list = getNormalAlts(toolId);
+  const phaseNew = new Set(getPhaseNewAlts(toolId).map(normalizeId));
   const src = (DATA.extraSources && DATA.extraSources[toolId]) || [];
   const extraQty = src.reduce((s, x) => s + (x.qty || 0), 0) || getExtraQty(toolId);
   const chips = [];
   list.forEach(a => {
     const q = getQty(a);
     const stockCls = q == null ? '' : (q > 0 ? 'has-stock' : 'no-stock');
-    chips.push(`<span class="alt-chip ${stockCls}" title="Stok: ${q == null ? '?' : q}">${a} (${q == null ? '?' : q})</span>`);
+    const phaseCls = phaseNew.has(normalizeId(a)) ? ' phase-new' : '';
+    const tip = phaseNew.has(normalizeId(a))
+      ? ('Yeni alternatif · Stok: ' + (q == null ? '?' : q))
+      : ('Stok: ' + (q == null ? '?' : q));
+    chips.push(`<span class="alt-chip ${stockCls}${phaseCls}" title="${tip}">${a} (${q == null ? '?' : q})</span>`);
   });
   if (extraQty) {
     const tip = src.length
@@ -2083,6 +2162,7 @@ function deleteProgram(name) {
 const SYNC_JSON_NAME = 'stok-data.json';
 let syncSource = 'embedded'; // embedded | localStorage | json-file | json-fetch | json-handle | github-stok
 let lastStokFileName = '';
+let lastDbFileName = '';
 let lastSyncReadAt = null;   // bu tarayıcıda son başarılı JSON okuma anı
 let lastSyncWriteAt = null;  // JSON dosyasındaki updatedAt (yazılma)
 
@@ -2169,6 +2249,7 @@ function updateSyncStatusUI(statusText) {
   const wr = document.getElementById('syncWriteAt');
   const so = document.getElementById('syncSourceText');
   const sf = document.getElementById('stokFileText');
+  const df = document.getElementById('dbFileText');
   if (st && statusText) st.textContent = statusText;
   if (rd) rd.textContent = fmtSyncTime(lastSyncReadAt);
   if (wr) wr.textContent = fmtSyncTime(lastSyncWriteAt);
@@ -2176,7 +2257,11 @@ function updateSyncStatusUI(statusText) {
   if (!lastStokFileName) {
     try { lastStokFileName = storage.get('takim_last_stok_file') || ''; } catch (e) {}
   }
+  if (!lastDbFileName) {
+    try { lastDbFileName = storage.get('takim_last_db_file') || ''; } catch (e) {}
+  }
   if (sf) sf.textContent = lastStokFileName || '— (gömülü / bilinmiyor)';
+  if (df) df.textContent = lastDbFileName || '— (gömülü / yüklenmedi)';
   const up = document.getElementById('uploadInfo');
   if (up) {
     const n = Object.keys(DATA.stok || {}).length;
@@ -2205,6 +2290,8 @@ function applySyncPayload(payload, sourceLabel) {
   DATA.stok = payload.stok;
   DATA.alts = payload.alts && typeof payload.alts === 'object' ? payload.alts : {};
   DATA.sapAlts = payload.sapAlts && typeof payload.sapAlts === 'object' ? payload.sapAlts : {};
+  DATA.sapPhase = payload.sapPhase && typeof payload.sapPhase === 'object' ? payload.sapPhase : {};
+  DATA.sapPhaseByNew = payload.sapPhaseByNew && typeof payload.sapPhaseByNew === 'object' ? payload.sapPhaseByNew : {};
   DATA.altsDbVersion = payload.altsDbVersion || (Object.keys(DATA.sapAlts).length ? 2 : 1);
   if (payload.programs && typeof payload.programs === 'object') {
     DATA.programs = payload.programs;
@@ -2549,31 +2636,113 @@ function findCol(headerRow, predicates) {
  * V2: SAP | ALTERNATIF → sapAlts[sap] = [takım…]
  * V1: Takım ID | Alternatif → alts[tool] = [takım…]
  */
+function parseToolIdList(raw) {
+  if (raw == null || !String(raw).trim()) return [];
+  return String(raw).split(/[\s,;]+/)
+    .map(p => normalizeId(String(p).replace(/-\d+$/, '')))
+    .filter(p => p && /^\d{4,}$/.test(p) && p.toUpperCase() !== 'ORTAK' && p.toUpperCase() !== 'TAKIM');
+}
+
 function parseAltsFromRows(rows) {
-  const result = { alts: {}, sapAlts: {}, version: 1 };
+  const result = {
+    alts: {},
+    sapAlts: {},
+    sapPhase: {},
+    sapPhaseByNew: {},
+    version: 1
+  };
   if (!rows || rows.length < 2) return result;
   const header = rows[0] || [];
-  const cSap = findCol(header, [/^sap$/, /^sap\b/, 'sap num', 'sap no']);
+  // Sütunlar: SAP | ALTERNATİF SAP / YENİ SAP | ALTERNATIF | YENİ ALTERNATIF
+  // Türkçe İ/ı için normalize
+  function normHeader(h) {
+    return String(h == null ? '' : h)
+      .replace(/İ/g, 'i').replace(/I/g, 'i').replace(/ı/g, 'i')
+      .toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/ş/g, 's').replace(/ğ/g, 'g').replace(/ü/g, 'u').replace(/ö/g, 'o').replace(/ç/g, 'c')
+      .replace(/[^a-z0-9\s\[\]]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  let cSap = -1, cNewSap = -1, cAlt = -1, cNewAlt = -1;
+  for (let i = 0; i < header.length; i++) {
+    const h = normHeader(header[i]);
+    if (!h) continue;
+    if (h === 'sap' || /^sap\s*\[/.test(h) || h.indexOf('sap num') === 0) {
+      if (cSap < 0) cSap = i;
+      continue;
+    }
+    if ((h.indexOf('alternatif sap') >= 0 || h.indexOf('yeni sap') >= 0) && h.indexOf('yeni alternatif') < 0) {
+      cNewSap = i;
+      continue;
+    }
+    if (h.indexOf('yeni alternatif') >= 0 || h.indexOf('new alt') >= 0) {
+      cNewAlt = i;
+      continue;
+    }
+    if (h.indexOf('alternatif') >= 0 || h.indexOf('alternative') >= 0) {
+      if (cAlt < 0) cAlt = i;
+      continue;
+    }
+  }
+  if (cSap < 0) cSap = 0;
+
   const cTool = findCol(header, ['tool', 'ürün id', 'urun id', 'takım id', 'takim id']);
-  const cAlt = findCol(header, ['alternative', 'alternatif', 'alt ']);
   const h0 = String(header[0] == null ? '' : header[0]).toLowerCase().trim();
   const isV2 = (cSap === 0 || /^sap/i.test(h0) || (cSap >= 0 && cTool < 0));
 
   if (isV2) {
     result.version = 2;
     const iSap = cSap >= 0 ? cSap : 0;
-    const iAlt = cAlt >= 0 ? cAlt : 1;
+    const iAlt = cAlt >= 0 ? cAlt : -1;
+    const iNewSap = cNewSap;
+    const iNewAlt = cNewAlt;
     for (let i = 1; i < rows.length; i++) {
       const r = rows[i];
       if (!r || r[iSap] == null) continue;
       const sap = String(r[iSap]).trim().replace(/\.0$/, '');
       if (!/^\d{5,}$/.test(sap)) continue;
-      const raw = iAlt >= 0 ? r[iAlt] : null;
-      result.sapAlts[sap] = raw != null && String(raw).trim()
-        ? String(raw).split(/[\s,;]+/)
-            .map(p => normalizeId(String(p).replace(/-\d+$/, '')))
-            .filter(p => p && /^\d{4,}$/.test(p) && p.toUpperCase() !== 'ORTAK' && p.toUpperCase() !== 'TAKIM')
-        : [];
+      const alts = iAlt >= 0 ? parseToolIdList(r[iAlt]) : [];
+      result.sapAlts[sap] = alts;
+      const newSapRaw = iNewSap >= 0 && r[iNewSap] != null ? String(r[iNewSap]).trim().replace(/\.0$/, '') : '';
+      const newSap = /^\d{5,}$/.test(newSapRaw) ? newSapRaw : '';
+      const newAlts = iNewAlt >= 0 ? parseToolIdList(r[iNewAlt]) : [];
+      if (newSap || newAlts.length) {
+        result.sapPhase[sap] = { newSap: newSap || '', newAlts: newAlts };
+        if (newSap) result.sapPhaseByNew[newSap] = sap;
+        // Yeni SAP ailesine de yeni alternatifleri bağla
+        if (newSap) {
+          if (!result.sapAlts[newSap]) result.sapAlts[newSap] = [];
+          const set = new Set(result.sapAlts[newSap].map(normalizeId));
+          newAlts.forEach(t => {
+            const n = normalizeId(t);
+            if (n && !set.has(n)) {
+              result.sapAlts[newSap].push(t);
+              set.add(n);
+            }
+          });
+          // Eski aile takımlarını yeni SAP listesine de ekle (çapraz uyumluluk)
+          alts.forEach(t => {
+            const n = normalizeId(t);
+            if (n && !set.has(n)) {
+              result.sapAlts[newSap].push(t);
+              set.add(n);
+            }
+          });
+        }
+        // Eski SAP ailesine yeni alternatifleri ekle
+        if (newAlts.length) {
+          const set = new Set((result.sapAlts[sap] || []).map(normalizeId));
+          newAlts.forEach(t => {
+            const n = normalizeId(t);
+            if (n && !set.has(n)) {
+              result.sapAlts[sap].push(t);
+              set.add(n);
+            }
+          });
+        }
+      }
     }
     return result;
   }
@@ -2586,14 +2755,7 @@ function parseAltsFromRows(rows) {
     if (!r || r[iTool] == null) continue;
     const tid = normalizeId(r[iTool]);
     if (!tid || /^genel/i.test(String(r[iTool]))) continue;
-    const raw = iAlt >= 0 ? r[iAlt] : null;
-    result.alts[tid] = raw != null && String(raw).trim()
-      ? String(raw).split(/[\s,;]+/).map(p => normalizeId(p)).filter(p => {
-          if (!p) return false;
-          const u = p.toUpperCase();
-          return u !== 'ORTAK' && u !== 'TAKIM';
-        })
-      : [];
+    result.alts[tid] = parseToolIdList(iAlt >= 0 ? r[iAlt] : null);
   }
   return result;
 }
@@ -2774,15 +2936,21 @@ function uploadAltsDb(input) {
           return;
         }
         DATA.sapAlts = parsed.sapAlts;
+        DATA.sapPhase = parsed.sapPhase || {};
+        DATA.sapPhaseByNew = parsed.sapPhaseByNew || {};
         DATA.altsDbVersion = 2;
         applyStockRules();
         applySapCentricAlts();
         saveStockLS();
         const nSap = Object.keys(DATA.sapAlts).length;
+        const nPhase = Object.keys(DATA.sapPhase).length;
         const nTools = Object.keys(DATA.alts).length;
+        lastDbFileName = file.name || '';
+        try { storage.set('takim_last_db_file', lastDbFileName); } catch (e) {}
         document.getElementById('uploadInfo').textContent =
-          `Alternatif DB V2 (SAP): ${nSap} SAP → ${nTools} takım — ${new Date().toLocaleString('tr-TR')}`;
-        toast(`V2 SAP alternatifleri: ${nSap} SAP grubu, ${nTools} takım`);
+          `Alternatif DB V2 (SAP): ${nSap} SAP, Phase-out ${nPhase} → ${nTools} takım — ${new Date().toLocaleString('tr-TR')}`;
+        updateSyncStatusUI('DB yüklendi: ' + lastDbFileName);
+        toast(`V2 SAP: ${nSap} grup, ${nPhase} phase-out, ${nTools} takım`);
       } else {
         if (!Object.keys(parsed.alts || {}).length) {
           toast('Alternatif satırı okunamadı', false);
@@ -2847,6 +3015,28 @@ function collectSearchMatches(q) {
       });
     });
   }
+  // Phase-out: yeni/eski SAP ile ara
+  if (DATA.sapPhase) {
+    Object.entries(DATA.sapPhase).forEach(([oldSap, p]) => {
+      const newSap = (p && p.newSap) || '';
+      const hit = String(oldSap).toLowerCase().includes(q) ||
+        String(newSap).toLowerCase().includes(q) ||
+        (p.newAlts || []).some(t => String(t).toLowerCase().includes(q));
+      if (!hit) return;
+      const sapFor = String(newSap).toLowerCase().includes(q) && newSap ? newSap : oldSap;
+      (DATA.sapAlts[oldSap] || []).forEach(t => add(t, DATA.stok[t] || {
+        sap: String(sapFor), qty: null, reorder: null, _dbOnly: true
+      }));
+      if (newSap) {
+        (DATA.sapAlts[newSap] || []).forEach(t => add(t, DATA.stok[t] || {
+          sap: String(newSap), qty: null, reorder: null, _dbOnly: true
+        }));
+      }
+      (p.newAlts || []).forEach(t => add(t, DATA.stok[t] || {
+        sap: String(sapFor), qty: null, reorder: null, _dbOnly: true
+      }));
+    });
+  }
   return found;
 }
 
@@ -2893,13 +3083,26 @@ const STOK_AUTO = {
   /** Klasör (boş = repo kökü). Örn. 'stok' → stok/ altı */
   dir: '',
   /** Dosya adı: ...Stok_20261022_091739.xlsx */
-  nameRe: /Stok[_\-]?(\d{8})[_\-]?(\d{6})/i
+  nameRe: /Stok[_\-]?(\d{8})[_\-]?(\d{6})/i,
+  /** DB_20261023_133000.xlsx veya DB-20261023-133000.xlsx */
+  dbNameRe: /DB[_\-]?(\d{8})[_\-]?(\d{6})/i
 };
 
 function parseStokStamp(name) {
   const m = String(name || '').match(STOK_AUTO.nameRe);
   if (!m) return null;
   return { ymd: m[1], hms: m[2], stamp: m[1] + m[2], name: name };
+}
+
+function parseDbStamp(name) {
+  const n = String(name || '');
+  const m = n.match(STOK_AUTO.dbNameRe);
+  if (m) return { ymd: m[1], hms: m[2], stamp: m[1] + m[2], name: n };
+  // Tarihsiz DB.xlsx yedek (en düşük öncelik)
+  if (/^DB\.xlsx$/i.test(n.trim()) || /^DB-\d+\.xlsx$/i.test(n.trim())) {
+    return { ymd: '00000000', hms: '000000', stamp: '00000000000000', name: n };
+  }
+  return null;
 }
 
 async function listRepoFiles(dir) {
@@ -2922,6 +3125,21 @@ function pickLatestStokEntry(entries) {
     const name = e.name || '';
     if (!/\.xlsx$/i.test(name)) return;
     const st = parseStokStamp(name);
+    if (!st) return;
+    if (!best || st.stamp > best.stamp) {
+      best = { ...st, download_url: e.download_url, path: e.path, size: e.size };
+    }
+  });
+  return best;
+}
+
+function pickLatestDbEntry(entries) {
+  let best = null;
+  (entries || []).forEach(e => {
+    if (!e || e.type !== 'file') return;
+    const name = e.name || '';
+    if (!/\.xlsx$/i.test(name)) return;
+    const st = parseDbStamp(name);
     if (!st) return;
     if (!best || st.stamp > best.stamp) {
       best = { ...st, download_url: e.download_url, path: e.path, size: e.size };
@@ -3021,6 +3239,119 @@ async function autoLoadLatestStokFromGitHub() {
   return { ok: true, name: best.name, n: n, stamp: best.stamp };
 }
 
+async function applyDbFromArrayBuffer(buf, labelName) {
+  if (typeof XLSX === 'undefined') throw new Error('Excel okuyucu yok');
+  const wb = XLSX.read(buf, { type: 'array' });
+  let sheet = wb.SheetNames.find(n => /^DB$/i.test(n));
+  if (!sheet) sheet = wb.SheetNames[0];
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheet], { header: 1 });
+  const parsed = parseAltsFromRows(rows);
+  if (parsed.version === 2) {
+    if (!Object.keys(parsed.sapAlts || {}).length) throw new Error('SAP alternatif satırı okunamadı');
+    DATA.sapAlts = parsed.sapAlts;
+    DATA.sapPhase = parsed.sapPhase || {};
+    DATA.sapPhaseByNew = parsed.sapPhaseByNew || {};
+    DATA.altsDbVersion = 2;
+  } else {
+    if (!Object.keys(parsed.alts || {}).length) throw new Error('Alternatif satırı okunamadı');
+    DATA.alts = parsed.alts;
+    DATA.altsDbVersion = 1;
+    DATA.sapAlts = {};
+    DATA.sapPhase = {};
+    DATA.sapPhaseByNew = {};
+  }
+  applyStockRules();
+  if (DATA.altsDbVersion === 2) applySapCentricAlts();
+  lastDbFileName = labelName || '';
+  try {
+    storage.set('takim_last_db_file', lastDbFileName);
+    storage.set('takim_last_db_at', new Date().toISOString());
+  } catch (e) {}
+  try { updateSyncStatusUI('DB: ' + lastDbFileName); } catch (e) {}
+  const nSap = Object.keys(DATA.sapAlts || {}).length;
+  const nPhase = Object.keys(DATA.sapPhase || {}).length;
+  const info = document.getElementById('uploadInfo');
+  if (info) {
+    info.textContent = (info.textContent ? info.textContent + ' · ' : '') +
+      'DB: ' + lastDbFileName + ' (' + nSap + ' SAP, phase-out ' + nPhase + ')';
+  }
+  return { nSap: nSap, nPhase: nPhase, nTools: Object.keys(DATA.alts || {}).length };
+}
+
+async function autoLoadLatestDbFromGitHub() {
+  const dirs = [];
+  if (STOK_AUTO.dir) dirs.push(STOK_AUTO.dir);
+  dirs.push('');
+  ['db', 'DB', 'stok', 'Stok', 'excel', 'data'].forEach(d => { if (!dirs.includes(d)) dirs.push(d); });
+
+  let best = null;
+  let lastErr = null;
+  for (const dir of dirs) {
+    try {
+      const entries = await listRepoFiles(dir);
+      const pick = pickLatestDbEntry(entries);
+      if (pick && (!best || pick.stamp > best.stamp)) best = pick;
+      if (pick && pick.stamp !== '00000000000000') break;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  // Yerel liste (localhost sunucu)
+  if (!best || best.stamp === '00000000000000') {
+    try {
+      for (const url of ['./__db_list__', '/__db_list__', './__stok_list__']) {
+        const r = await fetch(url, { cache: 'no-store' });
+        if (!r.ok) continue;
+        const data = await r.json();
+        if (!Array.isArray(data)) continue;
+        const entries = data.map(x => {
+          if (typeof x === 'string') return { name: x, path: x, type: 'file', download_url: './' + encodeURI(x) };
+          return {
+            name: x.name || x.path || '',
+            path: x.path || x.name || '',
+            type: 'file',
+            size: x.size,
+            download_url: x.download_url || ('./' + String(x.path || x.name || '').split('/').map(encodeURIComponent).join('/'))
+          };
+        });
+        const pick = pickLatestDbEntry(entries);
+        if (pick && (!best || pick.stamp > best.stamp)) {
+          best = pick;
+          best._local = true;
+        }
+        break;
+      }
+    } catch (e) { /* yerel yok */ }
+  }
+
+  if (!best) {
+    if (lastErr) console.warn('DB listesi:', lastErr);
+    return { ok: false, reason: lastErr ? String(lastErr.message || lastErr) : 'DB_*.xlsx bulunamadı' };
+  }
+  try {
+    const prev = storage.get('takim_last_db_file');
+    if (prev && prev === best.name && Object.keys(DATA.sapAlts || {}).length > 10) {
+      lastDbFileName = best.name;
+      try { updateSyncStatusUI('DB (önbellek): ' + best.name); } catch (e) {}
+      return { ok: true, skipped: true, name: best.name };
+    }
+  } catch (e) {}
+
+  let buf = null;
+  if (best._local) {
+    try {
+      const rel = (best.path || best.name || '').split('/').map(encodeURIComponent).join('/');
+      const r = await fetch('./' + rel, { cache: 'no-store' });
+      if (r.ok) buf = await r.arrayBuffer();
+    } catch (e) {}
+  }
+  if (!buf) buf = await fetchStokArrayBuffer(best);
+  const stats = await applyDbFromArrayBuffer(buf, best.name);
+  return { ok: true, name: best.name, stamp: best.stamp, ...stats };
+}
+
+
+
 
 function bootUI(label) {
   try {
@@ -3073,6 +3404,14 @@ function bootUI(label) {
     stokAuto = { ok: false, reason: String(e.message || e) };
   }
 
+  let dbAuto = null;
+  try {
+    dbAuto = await autoLoadLatestDbFromGitHub();
+  } catch (e) {
+    console.warn('Otomatik DB yüklenemedi', e);
+    dbAuto = { ok: false, reason: String(e.message || e) };
+  }
+
   const ok = await tryLoadSyncJson(false);
   if (!ok) {
     let label = (persistInfo && persistInfo.ok)
@@ -3086,6 +3425,9 @@ function bootUI(label) {
     bootUI(label);
     if (stokAuto && stokAuto.ok && !stokAuto.skipped) {
       try { toast('Güncel stok yüklendi: ' + stokAuto.name + ' (' + stokAuto.n + ' satır)', true); } catch (e) {}
+    }
+    if (dbAuto && dbAuto.ok && !dbAuto.skipped) {
+      try { toast('Güncel DB yüklendi: ' + dbAuto.name + ' (' + (dbAuto.nSap || 0) + ' SAP)', true); } catch (e) {}
     } else if (persistInfo && persistInfo.ok) {
       const p = Object.keys(DATA.programs || {}).length;
       try { toast('Programlar yüklendi: ' + p + ' kayıt', true); } catch (e) {}
