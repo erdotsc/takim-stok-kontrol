@@ -2209,6 +2209,7 @@ function clearJsonPulse() {
 
 /** JSON var ve gömülü / yerel veriden yeniyse butonları yak */
 async function checkJsonNewerAndPulse() {
+  if (isGitHubPages()) { try { clearJsonPulse(); } catch (e) {} return; }
   // Bu oturumda JSON zaten okunduysa yakma
   if (lastSyncReadAt && String(syncSource || '').indexOf('json') >= 0) {
     clearJsonPulse();
@@ -2463,6 +2464,7 @@ function canUseFsAccessPicker() {
 
 /** Chrome/Edge (http/https): kaydet + handle; aksi halde indirme */
 async function downloadSyncJson() {
+  if (isGitHubPages()) return;
   const payload = buildSyncPayload();
   const text = JSON.stringify(payload, null, 2);
   if (canUseFsAccessPicker() && window.showSaveFilePicker) {
@@ -2537,7 +2539,18 @@ async function pickSyncJsonFile() {
 }
 
 /** Kayıtlı handle veya fetch ile yükle. manual=true iken izin istenebilir. */
+
+/** GitHub Pages: stok-data.json kullanılmaz (eski kalma riski) */
+function isGitHubPages() {
+  try {
+    const h = (location.hostname || '').toLowerCase();
+    return h.endsWith('github.io') || h === 'github.io' ||
+      /githubusercontent\.com$/.test(h);
+  } catch (e) { return false; }
+}
+
 async function tryLoadSyncJson(manual) {
+  if (isGitHubPages()) return false;
   const isFile = (location.protocol || '').indexOf('file') === 0;
 
   // 1) Kayıtlı FileSystem handle (Chrome/Edge)
@@ -3427,11 +3440,26 @@ function bootUI(label) {
   if (!lastDbFileName && EMBEDDED.sapAlts && Object.keys(EMBEDDED.sapAlts).length) {
     lastDbFileName = lastDbFileName || 'DB.xlsx (gömülü)';
   }
+  if (isGitHubPages()) {
+    // JSON kontrollerini gizle
+    document.querySelectorAll('[data-json-only], #btnJsonLoad, #btnJsonSave, #btnJsonFolder, #jsonLoadBtn, #jsonSaveBtn').forEach(el => {
+      try { el.style.display = 'none'; } catch (e) {}
+    });
+    document.querySelectorAll('button, label, .btn').forEach(el => {
+      const t = (el.textContent || '').toLowerCase();
+      if (t.indexOf('json') >= 0 || t.indexOf('klasörden güncelle') >= 0 || t.indexOf('klasorden guncelle') >= 0) {
+        try { el.style.display = 'none'; } catch (e) {}
+      }
+    });
+    try { clearJsonPulse(); } catch (e) {}
+  }
   if (!lastSyncReadAt) {
-    syncSource = syncSource || 'embedded';
-    updateSyncStatusUI(label || 'Gömülü / yerel veri (JSON henüz okunmadı)');
+    syncSource = syncSource || (isGitHubPages() ? 'github' : 'embedded');
+    updateSyncStatusUI(label || (isGitHubPages()
+      ? 'GitHub (Stok + DB.xlsx — JSON yok)'
+      : 'Gömülü / yerel veri (JSON henüz okunmadı)'));
   } else {
-    updateSyncStatusUI(label || 'JSON okundu');
+    updateSyncStatusUI(label || (isGitHubPages() ? 'GitHub' : 'JSON okundu'));
   }
 }
 
@@ -3474,7 +3502,8 @@ function bootUI(label) {
     dbAuto = { ok: false, reason: String(e.message || e) };
   }
 
-  const ok = await tryLoadSyncJson(false);
+  // GitHub Pages: JSON (stok-data.json) okunmaz / yazılmaz
+  const ok = isGitHubPages() ? false : await tryLoadSyncJson(false);
   if (!ok) {
     let label = (persistInfo && persistInfo.ok)
       ? ('Kayıtlı veri (' + (persistInfo.source || 'tarayıcı') + ')')
